@@ -1,0 +1,21 @@
+# Configuration for Cog
+build:
+  gpu: true
+  cuda: "11.8"
+  python_version: "3.10"
+  python_packages:
+    - "torch==2.0.0"
+    - "torchvision"
+    - "accelerate==0.22.0"
+    - "transformers"
+    - "optimum"
+    - "matplotlib"
+    - "tiktoken"
+    - "einops"
+    - "transformers_stream_generator"
+    - "numpy<2.0.0"  # Added NumPy with version constraint
+    - "auto_gptq"
+
+
+# predict.py defines how predictions are run on your model
+predict: "predict.py:Predictor"

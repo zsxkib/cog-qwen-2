@@ -1,3 +1,9 @@
+# Replicate
+/model-cache/
+/token-cache/
+.cog
+/.github/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

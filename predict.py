@@ -1,7 +1,12 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
 
+import os
+import time
 import torch
+import warnings
+import subprocess
+from threading import Thread
 from cog import BasePredictor, Input, ConcatenateIterator
 from transformers.generation import GenerationConfig, TextIteratorStreamer
 from transformers import (
@@ -11,11 +16,20 @@ from transformers import (
     BitsAndBytesConfig,
     GPTQConfig,
 )
-from threading import Thread
 
 MODEL_NAME = "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4"
 MODEL_CACHE = "model-cache"
 TOKEN_CACHE = "token-cache"
+
+BASE_URL = f"https://weights.replicate.delivery/default/Qwen2-0.5B-Instruct-GPTQ-Int4/{MODEL_CACHE}/"
+
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HOME"] = MODEL_CACHE
+os.environ["TORCH_HOME"] = MODEL_CACHE
+os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
+os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
+os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
 
 
 def get_quantization_config(model_name):
@@ -35,9 +49,65 @@ def get_quantization_config(model_name):
         return None
 
 
+def download_weights(url: str, dest: str) -> None:
+    # NOTE WHEN YOU EXTRACT SPECIFY THE PARENT FOLDER
+    start = time.time()
+    print("[!] Initiating download from URL: ", url)
+    print("[~] Destination path: ", dest)
+    if ".tar" in dest:
+        dest = os.path.dirname(dest)
+    command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
+    try:
+        print(f"[~] Running command: {' '.join(command)}")
+        subprocess.check_call(command, close_fds=False)
+    except subprocess.CalledProcessError as e:
+        print(
+            f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}."
+        )
+        raise
+    print("[+] Download completed in: ", time.time() - start, "seconds")
+
+
 class Predictor(BasePredictor):
     def setup(self) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
+        
+        # Add these lines at the beginning of the setup method
+        import warnings
+        import transformers
+        
+        # Ignore all warnings
+        warnings.filterwarnings("ignore")
+        
+        # Disable transformers warnings
+        transformers.logging.set_verbosity_error()
+
+        if not os.path.exists(MODEL_CACHE):
+            os.makedirs(MODEL_CACHE)
+
+        model_files = [
+            "models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int4.tar",
+        ]
+        for model_file in model_files:
+            url = BASE_URL + model_file
+            filename = url.split("/")[-1]
+            dest_path = os.path.join(MODEL_CACHE, filename)
+            if not os.path.exists(dest_path.replace(".tar", "")):
+                download_weights(url, dest_path)
+
+        if not os.path.exists(TOKEN_CACHE):
+            os.makedirs(TOKEN_CACHE)
+
+        token_files = [
+            "models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int4.tar",
+        ]
+        for token_file in token_files:
+            url = BASE_URL + token_file
+            filename = url.split("/")[-1]
+            dest_path = os.path.join(TOKEN_CACHE, filename)
+            if not os.path.exists(dest_path.replace(".tar", "")):
+                download_weights(url, dest_path)
+
         print(f"CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
             print(f"CUDA device: {torch.cuda.get_device_name(0)}")

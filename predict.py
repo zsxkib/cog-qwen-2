@@ -1,6 +1,3 @@
-# Prediction interface for Cog ⚙️
-# https://github.com/replicate/cog/blob/main/docs/python.md
-
 import os
 import time
 import torch
@@ -8,23 +5,27 @@ import warnings
 import subprocess
 from threading import Thread
 from cog import BasePredictor, Input, ConcatenateIterator
+import transformers
 from transformers.generation import GenerationConfig, TextIteratorStreamer
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    AutoConfig,
     BitsAndBytesConfig,
     GPTQConfig,
 )
 
-MODEL_NAME = "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4"
+MODEL_NAMES = {
+    "full": "Qwen/Qwen2-0.5B-Instruct",
+    "int4": "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4",
+    "int8": "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int8",
+}
+DEFAULT_MODEL = "full"
+
 MODEL_CACHE = "model-cache"
 TOKEN_CACHE = "token-cache"
 
-BASE_URL = f"https://weights.replicate.delivery/default/Qwen2-0.5B-Instruct-GPTQ-Int4/{MODEL_CACHE}/"
+BASE_URL = "https://weights.replicate.delivery/default/Qwen2-0.5B-Instruct/"
 
-os.environ["HF_DATASETS_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HOME"] = MODEL_CACHE
 os.environ["TORCH_HOME"] = MODEL_CACHE
 os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
@@ -35,22 +36,19 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
 def get_quantization_config(model_name):
     if "GPTQ" in model_name:
         bits = 4 if "Int4" in model_name else 8
+        print(f"[!] Using GPTQ quantization with {bits} bits")
         return GPTQConfig(bits=bits, disable_exllama=True)
     elif "AWQ" in model_name:
-        # AWQ typically uses 4-bit quantization
+        print("[!] Using AWQ quantization with 4 bits")
         return BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
         )
-    elif "GGUF" in model_name:
-        # GGUF models are typically loaded differently, often using libraries like ctransformers
-        raise NotImplementedError("GGUF models are not supported in this setup")
     else:
-        # For non-quantized models, return None
+        print("[!] Using no quantization")
         return None
 
 
 def download_weights(url: str, dest: str) -> None:
-    # NOTE WHEN YOU EXTRACT SPECIFY THE PARENT FOLDER
     start = time.time()
     print("[!] Initiating download from URL: ", url)
     print("[~] Destination path: ", dest)
@@ -70,72 +68,62 @@ def download_weights(url: str, dest: str) -> None:
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
-        """Load the model into memory to make running multiple predictions efficient"""
-        
-        # Add these lines at the beginning of the setup method
-        import warnings
-        import transformers
-        
-        # Ignore all warnings
+        print(f"[!] Setting up default model: {MODEL_NAMES[DEFAULT_MODEL]}")
+
         warnings.filterwarnings("ignore")
-        
-        # Disable transformers warnings
         transformers.logging.set_verbosity_error()
 
-        if not os.path.exists(MODEL_CACHE):
-            os.makedirs(MODEL_CACHE)
+        self.models = {}
+        self.tokenizers = {}
 
-        model_files = [
-            "models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int4.tar",
-        ]
-        for model_file in model_files:
-            url = BASE_URL + model_file
-            filename = url.split("/")[-1]
-            dest_path = os.path.join(MODEL_CACHE, filename)
-            if not os.path.exists(dest_path.replace(".tar", "")):
-                download_weights(url, dest_path)
+        # Download and set up the default model
+        self.load_model(DEFAULT_MODEL)
 
-        if not os.path.exists(TOKEN_CACHE):
-            os.makedirs(TOKEN_CACHE)
+    def load_model(self, model_type):
+        if model_type not in self.models:
+            model_name = MODEL_NAMES[model_type]
+            print(f"[!] Loading model: {model_name}")
 
-        token_files = [
-            "models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int4.tar",
-        ]
-        for token_file in token_files:
-            url = BASE_URL + token_file
-            filename = url.split("/")[-1]
-            dest_path = os.path.join(TOKEN_CACHE, filename)
-            if not os.path.exists(dest_path.replace(".tar", "")):
-                download_weights(url, dest_path)
+            # Construct the correct URLs for model and token files
+            if model_type == "full":
+                model_dir = "Qwen2-0.5B-Instruct"
+                file_name = "models--Qwen--Qwen2-0.5B-Instruct.tar"
+            else:
+                model_dir = f"Qwen2-0.5B-Instruct-GPTQ-Int{model_type[3]}"
+                file_name = (
+                    f"models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int{model_type[3]}.tar"
+                )
 
-        print(f"CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            model_url = f"{BASE_URL}{model_dir}/model-cache/{file_name}"
+            token_url = f"{BASE_URL}{model_dir}/token-cache/{file_name}"
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_NAME, trust_remote_code=True, cache_dir=TOKEN_CACHE
-        )
+            # Lazy downloading
+            model_path = os.path.join(MODEL_CACHE, file_name)
+            if not os.path.exists(model_path.replace(".tar", "")):
+                download_weights(model_url, model_path)
 
-        # Get the appropriate quantization config
-        quantization_config = get_quantization_config(MODEL_NAME)
+            token_path = os.path.join(TOKEN_CACHE, file_name)
+            if not os.path.exists(token_path.replace(".tar", "")):
+                download_weights(token_url, token_path)
 
-        # Load the model
-        model_kwargs = {
-            "trust_remote_code": True,
-            "cache_dir": MODEL_CACHE,
-            "device_map": "auto",
-        }
-        if quantization_config:
-            model_kwargs["quantization_config"] = quantization_config
+            self.tokenizers[model_type] = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True, cache_dir=TOKEN_CACHE
+            )
 
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **model_kwargs)
+            quantization_config = get_quantization_config(model_name)
+            model_kwargs = {
+                "trust_remote_code": True,
+                "cache_dir": MODEL_CACHE,
+                "device_map": "auto",
+            }
+            if quantization_config:
+                model_kwargs["quantization_config"] = quantization_config
 
-        model.generation_config = GenerationConfig.from_pretrained(
-            MODEL_NAME, trust_remote_code=True, cache_dir=MODEL_CACHE
-        )
-        self.model = model
-
-        print(f"Model device map: {self.model.hf_device_map}")
+            model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            model.generation_config = GenerationConfig.from_pretrained(
+                model_name, trust_remote_code=True, cache_dir=MODEL_CACHE
+            )
+            self.models[model_type] = model
 
     def predict(
         self,
@@ -145,6 +133,11 @@ class Predictor(BasePredictor):
         ),
         system_prompt: str = Input(
             description="System prompt", default="You are a helpful assistant."
+        ),
+        model_type: str = Input(
+            description="Choose between 'int4', 'int8', and 'full' models",
+            default=DEFAULT_MODEL,
+            choices=["full", "int4", "int8"],
         ),
         max_new_tokens: int = Input(
             description="The maximum number of tokens to generate",
@@ -178,7 +171,12 @@ class Predictor(BasePredictor):
             description="The seed for the random number generator", default=None
         ),
     ) -> ConcatenateIterator:
-        """Run a single prediction on the model"""
+        if model_type not in self.models:
+            self.load_model(model_type)
+
+        model = self.models[model_type]
+        tokenizer = self.tokenizers[model_type]
+
         if seed is None:
             seed = torch.randint(0, 2**30, (1,)).item()
         torch.manual_seed(seed)
@@ -188,13 +186,13 @@ class Predictor(BasePredictor):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
-        text = self.tokenizer.apply_chat_template(
+        text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
 
-        model_inputs = self.tokenizer([text], return_tensors="pt").to("cuda")
+        model_inputs = tokenizer([text], return_tensors="pt").to("cuda")
         streamer = TextIteratorStreamer(
-            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+            tokenizer, skip_prompt=True, skip_special_tokens=True
         )
         generation_kwargs = {
             "input_ids": model_inputs.input_ids,
@@ -207,8 +205,24 @@ class Predictor(BasePredictor):
             "repetition_penalty": repetition_penalty,
             "streamer": streamer,
         }
-        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+
+        start_time = time.time()
+        first_token_time = None
+        total_tokens = 0
+        thread = Thread(target=model.generate, kwargs=generation_kwargs)
         thread.start()
         for new_text in streamer:
+            if first_token_time is None:
+                first_token_time = time.time() - start_time
+            total_tokens += len(new_text)
             yield new_text
         thread.join()
+        end_time = time.time()
+
+        total_time = end_time - start_time
+        throughput = total_tokens / total_time if total_time > 0 else 0
+
+        print(f"\nTime to first token: {first_token_time:.2f} seconds")
+        print(f"Total generation time: {total_time:.2f} seconds")
+        print(f"Total tokens generated: {total_tokens}")
+        print(f"Throughput: {throughput:.2f} tokens/second")

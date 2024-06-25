@@ -16,7 +16,7 @@ from transformers import (
 
 # Configuration
 USE_PREDOWNLOADED_WEIGHTS = True  # Set to False to download from Hugging Face
-MODEL_FAMILY = "1.5B"  # Choose from "0.5B", "1.5B", "7B", "57B", "72B"
+MODEL_FAMILY = "7B"  # Choose from "0.5B", "1.5B", "7B", "57B", "72B"
 
 MODEL_VARIANTS = {
     "72B": [

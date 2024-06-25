@@ -14,23 +14,69 @@ from transformers import (
     GPTQConfig,
 )
 
-MODEL_NAMES = {
-    "full": "Qwen/Qwen2-0.5B-Instruct",
-    "int4": "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4",
-    "int8": "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int8",
+# Configuration
+USE_PREDOWNLOADED_WEIGHTS = True  # Set to False to download from Hugging Face
+MODEL_FAMILY = "0.5B"  # Choose from "0.5B", "1.5B", "7B", "57B", "72B"
+
+MODEL_VARIANTS = {
+    "72B": [
+        "Qwen/Qwen2-72B-Instruct",
+        "Qwen/Qwen2-72B-Instruct-GPTQ-Int8",
+        "Qwen/Qwen2-72B-Instruct-GPTQ-Int4",
+    ],
+    "57B": [
+        "Qwen/Qwen2-57B-A14B-Instruct",
+        "Qwen/Qwen2-57B-A14B-Instruct-GPTQ-Int4",
+    ],
+    "7B": [
+        "Qwen/Qwen2-7B-Instruct",
+        "Qwen/Qwen2-7B-Instruct-GPTQ-Int8",
+        "Qwen/Qwen2-7B-Instruct-GPTQ-Int4",
+    ],
+    "1.5B": [
+        "Qwen/Qwen2-1.5B-Instruct",
+        "Qwen/Qwen2-1.5B-Instruct-GPTQ-Int8",
+        "Qwen/Qwen2-1.5B-Instruct-GPTQ-Int4",
+    ],
+    "0.5B": [
+        "Qwen/Qwen2-0.5B-Instruct",
+        "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int8",
+        "Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4",
+    ],
 }
-DEFAULT_MODEL = "full"
+
+MODEL_NAMES = {f"{name.split('/')[-1]}": name for name in MODEL_VARIANTS[MODEL_FAMILY]}
+DEFAULT_MODEL = list(MODEL_NAMES.keys())[0]  # First model in the list
 
 MODEL_CACHE = "model-cache"
 TOKEN_CACHE = "token-cache"
 
-BASE_URL = "https://weights.replicate.delivery/default/Qwen2-0.5B-Instruct/"
+BASE_URL = f"https://weights.replicate.delivery/default/Qwen2-{MODEL_FAMILY}-Instruct/"
+
+# Environment setup
+if USE_PREDOWNLOADED_WEIGHTS:
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 os.environ["HF_HOME"] = MODEL_CACHE
 os.environ["TORCH_HOME"] = MODEL_CACHE
 os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
-os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
 os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
+
+
+def get_model_info(model_type):
+    model_name = MODEL_NAMES[model_type].split("/")[-1]
+    model_dir = model_name
+    if "GPTQ" in model_name:
+        # For GPTQ models, we need to include the quantization info in the directory name
+        quantization_info = "-".join(model_name.split("-")[-2:])
+        model_dir = f"Qwen2-{MODEL_FAMILY}-Instruct-{quantization_info}"
+    else:
+        model_dir = f"Qwen2-{MODEL_FAMILY}-Instruct"
+    return {
+        "dir": model_dir,
+        "file": f"models--Qwen--{model_name}.tar",
+    }
 
 
 def get_quantization_config(model_name):
@@ -84,28 +130,25 @@ class Predictor(BasePredictor):
             model_name = MODEL_NAMES[model_type]
             print(f"[!] Loading model: {model_name}")
 
-            # Construct the correct URLs for model and token files
-            if model_type == "full":
-                model_dir = "Qwen2-0.5B-Instruct"
-                file_name = "models--Qwen--Qwen2-0.5B-Instruct.tar"
-            else:
-                model_dir = f"Qwen2-0.5B-Instruct-GPTQ-Int{model_type[3]}"
-                file_name = (
-                    f"models--Qwen--Qwen2-0.5B-Instruct-GPTQ-Int{model_type[3]}.tar"
-                )
+            if USE_PREDOWNLOADED_WEIGHTS:
+                # Code for using pre-downloaded weights
+                model_info = get_model_info(model_type)
+                model_dir = model_info["dir"]
+                file_name = model_info["file"]
 
-            model_url = f"{BASE_URL}{model_dir}/model-cache/{file_name}"
-            token_url = f"{BASE_URL}{model_dir}/token-cache/{file_name}"
+                model_url = f"{BASE_URL}{model_dir}/model-cache/{file_name}"
+                token_url = f"{BASE_URL}{model_dir}/token-cache/{file_name}"
 
-            # Lazy downloading
-            model_path = os.path.join(MODEL_CACHE, file_name)
-            if not os.path.exists(model_path.replace(".tar", "")):
-                download_weights(model_url, model_path)
+                # Lazy downloading
+                model_path = os.path.join(MODEL_CACHE, file_name)
+                if not os.path.exists(model_path.replace(".tar", "")):
+                    download_weights(model_url, model_path)
 
-            token_path = os.path.join(TOKEN_CACHE, file_name)
-            if not os.path.exists(token_path.replace(".tar", "")):
-                download_weights(token_url, token_path)
+                token_path = os.path.join(TOKEN_CACHE, file_name)
+                if not os.path.exists(token_path.replace(".tar", "")):
+                    download_weights(token_url, token_path)
 
+            # Common code for both pre-downloaded and Hugging Face
             self.tokenizers[model_type] = AutoTokenizer.from_pretrained(
                 model_name, trust_remote_code=True, cache_dir=TOKEN_CACHE
             )
@@ -135,9 +178,9 @@ class Predictor(BasePredictor):
             description="System prompt", default="You are a helpful assistant."
         ),
         model_type: str = Input(
-            description="Choose between 'int4', 'int8', and 'full' models",
+            description=f"Choose from available {MODEL_FAMILY} models",
             default=DEFAULT_MODEL,
-            choices=["full", "int4", "int8"],
+            choices=list(MODEL_NAMES.keys()),
         ),
         max_new_tokens: int = Input(
             description="The maximum number of tokens to generate",
